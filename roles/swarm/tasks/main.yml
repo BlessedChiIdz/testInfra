@@ -1,0 +1,113 @@
+- name: Validate Swarm inventory groups
+  ansible.builtin.assert:
+    that:
+      - groups['swarm_managers'] is defined
+      - groups['swarm_managers'] | length > 0
+      - groups['swarm_workers'] is defined
+      - groups['swarm_workers'] | length > 0
+    fail_msg: "Define swarm_managers and swarm_workers groups in inventory."
+  run_once: true
+
+- name: Read local Docker Swarm state
+  ansible.builtin.command:
+    argv:
+      - docker
+      - info
+      - --format
+      - "{% raw %}{{.Swarm.LocalNodeState}}{% endraw %}"
+  register: swarm_local_state
+  changed_when: false
+
+- name: Initialize Swarm on primary manager
+  ansible.builtin.command:
+    argv:
+      - docker
+      - swarm
+      - init
+      - --advertise-addr
+      - "{{ hostvars[inventory_hostname].ansible_host | default(ansible_default_ipv4.address) }}"
+  when:
+    - inventory_hostname == groups['swarm_managers'][0]
+    - swarm_local_state.stdout | trim != 'active'
+  register: swarm_init
+  changed_when: swarm_init.rc == 0
+
+- name: Fetch worker join token
+  ansible.builtin.command:
+    argv:
+      - docker
+      - swarm
+      - join-token
+      - -q
+      - worker
+  register: swarm_worker_join_token
+  changed_when: false
+  when: inventory_hostname == groups['swarm_managers'][0]
+
+- name: Join worker nodes to Swarm
+  ansible.builtin.command:
+    argv:
+      - docker
+      - swarm
+      - join
+      - --token
+      - "{{ hostvars[groups['swarm_managers'][0]].swarm_worker_join_token.stdout | trim }}"
+      - "{{ hostvars[groups['swarm_managers'][0]].ansible_host | default(groups['swarm_managers'][0]) }}:2377"
+  when:
+    - inventory_hostname in groups['swarm_workers']
+    - swarm_local_state.stdout | trim != 'active'
+  register: swarm_join
+  changed_when: swarm_join.rc == 0
+
+- name: Read worker node names from Docker
+  ansible.builtin.command:
+    argv:
+      - docker
+      - info
+      - --format
+      - "{% raw %}{{.Name}}{% endraw %}"
+  register: swarm_node_name_cmd
+  changed_when: false
+  when: inventory_hostname in groups['swarm_workers']
+
+- name: Store worker node names
+  ansible.builtin.set_fact:
+    swarm_node_name: "{{ swarm_node_name_cmd.stdout | trim }}"
+  when: inventory_hostname in groups['swarm_workers']
+
+- name: Check current Swarm worker labels
+  ansible.builtin.command:
+    argv:
+      - docker
+      - node
+      - inspect
+      - "{{ hostvars[item].swarm_node_name }}"
+      - --format
+      - "{% raw %}{{ index .Spec.Labels \"worker\" }}{% endraw %}"
+  loop: "{{ groups['swarm_workers'] }}"
+  loop_control:
+    label: "{{ item }}"
+  delegate_to: "{{ groups['swarm_managers'][0] }}"
+  run_once: true
+  register: swarm_worker_label_state
+  changed_when: false
+  failed_when: false
+  when: hostvars[item].swarm_node_name is defined
+
+- name: Apply worker label in Swarm
+  ansible.builtin.command:
+    argv:
+      - docker
+      - node
+      - update
+      - --label-add
+      - worker=true
+      - "{{ hostvars[item.item].swarm_node_name }}"
+  loop: "{{ swarm_worker_label_state.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  delegate_to: "{{ groups['swarm_managers'][0] }}"
+  run_once: true
+  when:
+    - item.rc == 0
+    - item.stdout | trim != 'true'

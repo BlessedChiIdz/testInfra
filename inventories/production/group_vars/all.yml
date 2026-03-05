@@ -1,0 +1,49 @@
+# Пользователи, которые должны существовать на каждом сервере.
+# Все пароли блокируются, вход выполняется только по SSH-ключам.
+managed_users:
+  - name: admin-1
+    groups:
+      - sudo
+      - docker
+    ssh_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEKEYFORADMIN1 admin-1@mobilepark"
+
+  - name: admin-2
+    groups:
+      - sudo
+      - docker
+    ssh_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEKEYFORADMIN2 admin-2@mobilepark"
+
+  - name: admin-3
+    groups:
+      - sudo
+      - docker
+    ssh_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEKEYFORADMIN3 admin-3@mobilepark"
+
+  - name: ansible
+    groups:
+      - sudo
+      - docker
+    ssh_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEKEYFORANSIBLE ansible@mobilepark"
+
+  - name: autodeploy
+    groups:
+      - docker
+    ssh_keys:
+      - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEXAMPLEKEYFORAUTODEPLOY autodeploy@mobilepark"
+
+managed_user_shell: /bin/bash
+docker_package_name: docker.io
+hold_docker_package: true
+
+required_software:
+  - mc
+  - ncdu
+  - cifs-utils
+  - nfs-common
+
+# Включает Swarm-часть.
+swarm_enabled: true

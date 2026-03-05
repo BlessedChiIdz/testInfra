@@ -1,0 +1,153 @@
+- name: Ensure managed users are defined
+  ansible.builtin.assert:
+    that:
+      - managed_users is defined
+      - managed_users | length > 0
+    fail_msg: "Variable managed_users must contain at least one user entry."
+
+- name: Ensure every managed user has SSH key(s)
+  ansible.builtin.assert:
+    that:
+      - item.ssh_keys is defined
+      - item.ssh_keys | length > 0
+    fail_msg: "User {{ item.name }} has no ssh_keys configured."
+  loop: "{{ managed_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Read apt policy for Docker package
+  ansible.builtin.command: "apt-cache policy {{ docker_package_name }}"
+  register: docker_policy
+  changed_when: false
+
+- name: Resolve Docker candidate version
+  ansible.builtin.set_fact:
+    docker_candidate_version: >-
+      {{
+        (
+          docker_policy.stdout_lines
+          | select('match', '^\\s*Candidate:')
+          | map('regex_replace', '^\\s*Candidate:\\s*', '')
+          | list
+          | first
+        )
+      }}
+
+- name: Validate Docker candidate version
+  ansible.builtin.assert:
+    that:
+      - docker_candidate_version is defined
+      - docker_candidate_version | length > 0
+      - docker_candidate_version != '(none)'
+    fail_msg: "Could not resolve Docker version in Ubuntu repository."
+
+- name: Install Docker with fixed repository version
+  ansible.builtin.apt:
+    name: "{{ docker_package_name }}={{ docker_candidate_version }}"
+    state: present
+
+- name: Hold Docker package version
+  ansible.builtin.dpkg_selections:
+    name: "{{ docker_package_name }}"
+    selection: hold
+  when: hold_docker_package | bool
+
+- name: Install required utility software
+  ansible.builtin.apt:
+    name: "{{ required_software }}"
+    state: present
+
+- name: Enable and start Docker
+  ansible.builtin.service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Ensure managed users exist
+  ansible.builtin.user:
+    name: "{{ item.name }}"
+    shell: "{{ managed_user_shell }}"
+    groups: >-
+      {{
+        (item.groups | default([]) | join(','))
+        if (item.groups is defined and item.groups | length > 0)
+        else omit
+      }}
+    append: true
+    create_home: true
+    password_lock: true
+    state: present
+  loop: "{{ managed_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Grant passwordless sudo to managed sudo users
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/90-{{ item.name }}-nopasswd"
+    content: "{{ item.name }} ALL=(ALL) NOPASSWD:ALL\n"
+    owner: root
+    group: root
+    mode: "0440"
+    validate: "/usr/sbin/visudo -cf %s"
+  loop: "{{ managed_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - item.groups is defined
+    - "'sudo' in item.groups"
+
+- name: Ensure ~/.ssh exists for managed users
+  ansible.builtin.file:
+    path: "/home/{{ item.name }}/.ssh"
+    state: directory
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0700"
+  loop: "{{ managed_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Install authorized_keys for managed users
+  ansible.builtin.copy:
+    dest: "/home/{{ item.name }}/.ssh/authorized_keys"
+    content: "{{ (item.ssh_keys | join('\n')) ~ '\n' }}"
+    owner: "{{ item.name }}"
+    group: "{{ item.name }}"
+    mode: "0600"
+  loop: "{{ managed_users }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Enforce root SSH login prohibition in sshd_config
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?\s*PermitRootLogin\s+'
+    line: 'PermitRootLogin no'
+    state: present
+  notify: Restart ssh
+
+- name: Enforce password SSH login prohibition in sshd_config
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?\s*PasswordAuthentication\s+'
+    line: 'PasswordAuthentication no'
+    state: present
+  notify: Restart ssh
+
+- name: Deploy SSH hardening policy
+  ansible.builtin.template:
+    src: sshd-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/99-mobilepark-hardening.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart ssh
+
+- name: Validate SSH configuration
+  ansible.builtin.command: sshd -t
+  changed_when: false

@@ -1,0 +1,14 @@
+- name: Prepare MobilePark baseline servers
+  hosts: mobilepark
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: base
+      tags:
+        - base
+
+    - role: swarm
+      when: swarm_enabled | bool
+      tags:
+        - swarm
